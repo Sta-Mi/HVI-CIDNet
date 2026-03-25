@@ -62,18 +62,17 @@ def train(epoch):
         gt_hvi = model.HVIT(gt_rgb)
         loss_hvi = L1_loss(output_hvi, gt_hvi) + D_loss(output_hvi, gt_hvi) + E_loss(output_hvi, gt_hvi) + opt.P_weight * P_loss(output_hvi, gt_hvi)[0]
         loss_rgb = L1_loss(output_rgb, gt_rgb) + D_loss(output_rgb, gt_rgb) + E_loss(output_rgb, gt_rgb) + opt.P_weight * P_loss(output_rgb, gt_rgb)[0]
-        decouple_loss, invariance_loss, recon_loss = disentangle_regularization(aux)
+        decouple_loss, invariance_loss, recon_loss = disentangle_regularization(aux, gt_hvi)
         loss = loss_rgb + opt.HVI_weight * loss_hvi \
              + opt.hdp_ortho_weight * decouple_loss \
              + opt.hdp_invariance_weight * invariance_loss \
              + opt.hdp_recon_weight * recon_loss
         iter += 1
         
-        if opt.grad_clip:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.01, norm_type=2)
-        
         optimizer.zero_grad()
         loss.backward()
+        if opt.grad_clip:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.01, norm_type=2)
         optimizer.step()
         
         loss_print = loss_print + loss.item()
@@ -176,7 +175,7 @@ def make_scheduler():
         raise Exception("should choose a scheduler")
     return optimizer,scheduler
 
-def disentangle_regularization(aux):
+def disentangle_regularization(aux, gt_hvi):
     zi = aux["z_i"]
     zc = aux["z_c"]
 
@@ -187,9 +186,9 @@ def disentangle_regularization(aux):
 
     c_delta = aux["c_enh"] - aux["c_base"]
     i_delta = aux["i_enh"] - aux["i_base"]
-    invariance_loss = c_delta.abs().mean() + (c_delta * i_delta).abs().mean()
+    invariance_loss = (c_delta * i_delta).abs().mean() + 0.5 * F.l1_loss(aux["c_enh"], gt_hvi[:, :2, :, :])
 
-    recon_loss = F.l1_loss(aux["i_enh"], aux["i_base"]) + 0.5 * F.l1_loss(aux["c_enh"], aux["c_base"])
+    recon_loss = F.l1_loss(aux["i_enh"], gt_hvi[:, 2:3, :, :]) + 0.5 * F.l1_loss(aux["c_enh"], gt_hvi[:, :2, :, :])
 
     return decouple_loss, invariance_loss, recon_loss
 

@@ -10,7 +10,7 @@ class HighDimProjector(nn.Module):
         self.project = nn.Sequential(
             nn.Conv2d(in_channels, hidden_channels, kernel_size=1, bias=False),
             nn.GELU(),
-            nn.Conv2d(hidden_channels, hidden_channels, kernel_size=3, padding=1, groups=4, bias=False),
+            nn.Conv2d(hidden_channels, hidden_channels, kernel_size=3, padding=1, bias=False),
             nn.GELU(),
             nn.Conv2d(hidden_channels, hidden_channels, kernel_size=1, bias=False),
         )
