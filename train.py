@@ -1,5 +1,6 @@
 import os
 import torch
+import torch.nn.functional as F
 import random
 from torchvision import transforms
 import torch.optim as optim
@@ -52,16 +53,20 @@ def train(epoch):
         # use random gamma function (enhancement curve) to improve generalization
         if opt.gamma:
             gamma = random.randint(opt.start_gamma,opt.end_gamma) / 100.0
-            output_rgb = model(im1 ** gamma)  
+            output_rgb, aux = model(im1 ** gamma, return_aux=True)  
         else:
-            output_rgb = model(im1)  
+            output_rgb, aux = model(im1, return_aux=True)  
             
         gt_rgb = im2
         output_hvi = model.HVIT(output_rgb)
         gt_hvi = model.HVIT(gt_rgb)
         loss_hvi = L1_loss(output_hvi, gt_hvi) + D_loss(output_hvi, gt_hvi) + E_loss(output_hvi, gt_hvi) + opt.P_weight * P_loss(output_hvi, gt_hvi)[0]
         loss_rgb = L1_loss(output_rgb, gt_rgb) + D_loss(output_rgb, gt_rgb) + E_loss(output_rgb, gt_rgb) + opt.P_weight * P_loss(output_rgb, gt_rgb)[0]
-        loss = loss_rgb + opt.HVI_weight * loss_hvi
+        decouple_loss, invariance_loss, recon_loss = disentangle_regularization(aux)
+        loss = loss_rgb + opt.HVI_weight * loss_hvi \
+             + opt.hdp_ortho_weight * decouple_loss \
+             + opt.hdp_invariance_weight * invariance_loss \
+             + opt.hdp_recon_weight * recon_loss
         iter += 1
         
         if opt.grad_clip:
@@ -76,8 +81,14 @@ def train(epoch):
         pic_cnt += 1
         pic_last_10 += 1
         if iter == train_len:
-            print("===> Epoch[{}]: Loss: {:.4f} || Learning rate: lr={}.".format(epoch,
-                loss_last_10/pic_last_10, optimizer.param_groups[0]['lr']))
+            print("===> Epoch[{}]: Loss: {:.4f} || LR: {} || ortho: {:.4f} inv: {:.4f} recon: {:.4f}".format(
+                epoch,
+                loss_last_10/pic_last_10,
+                optimizer.param_groups[0]['lr'],
+                decouple_loss.item(),
+                invariance_loss.item(),
+                recon_loss.item(),
+            ))
             loss_last_10 = 0
             pic_last_10 = 0
             output_img = transforms.ToPILImage()((output_rgb)[0].squeeze(0))
@@ -141,7 +152,7 @@ def load_datasets():
 
 def build_model():
     print('===> Building model ')
-    model = CIDNet().cuda()
+    model = CIDNet(hdp_dim=opt.hdp_dim).cuda()
     if opt.start_epoch > 0:
         pth = f"./weights/train/epoch_{opt.start_epoch}.pth"
         model.load_state_dict(torch.load(pth, map_location=lambda storage, loc: storage))
@@ -164,6 +175,24 @@ def make_scheduler():
     else:
         raise Exception("should choose a scheduler")
     return optimizer,scheduler
+
+def disentangle_regularization(aux):
+    zi = aux["z_i"]
+    zc = aux["z_c"]
+
+    zi_n = F.normalize(zi.flatten(2), dim=1)
+    zc_n = F.normalize(zc.flatten(2), dim=1)
+    cross_corr = torch.matmul(zi_n, zc_n.transpose(1, 2))
+    decouple_loss = cross_corr.abs().mean()
+
+    c_delta = aux["c_enh"] - aux["c_base"]
+    i_delta = aux["i_enh"] - aux["i_base"]
+    invariance_loss = c_delta.abs().mean() + (c_delta * i_delta).abs().mean()
+
+    recon_loss = F.l1_loss(aux["i_enh"], aux["i_base"]) + 0.5 * F.l1_loss(aux["c_enh"], aux["c_base"])
+
+    return decouple_loss, invariance_loss, recon_loss
+
 
 def init_loss():
     L1_weight   = opt.L1_weight
@@ -211,6 +240,10 @@ if __name__ == '__main__':
         f.write(f"D_weight: {opt.D_weight}\n")  
         f.write(f"E_weight: {opt.E_weight}\n")  
         f.write(f"P_weight: {opt.P_weight}\n")  
+        f.write(f"hdp_dim: {opt.hdp_dim}\n")  
+        f.write(f"hdp_ortho_weight: {opt.hdp_ortho_weight}\n")  
+        f.write(f"hdp_invariance_weight: {opt.hdp_invariance_weight}\n")  
+        f.write(f"hdp_recon_weight: {opt.hdp_recon_weight}\n")  
         f.write("| Epochs | PSNR | SSIM | LPIPS |\n")  
         f.write("|----------------------|----------------------|----------------------|----------------------|\n")  
         

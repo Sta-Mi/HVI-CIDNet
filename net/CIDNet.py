@@ -3,13 +3,15 @@ import torch.nn as nn
 from net.HVI_transform import RGB_HVI
 from net.transformer_utils import *
 from net.LCA import *
+from net.hdp import HighDimProjector, FactorDecoder
 from huggingface_hub import PyTorchModelHubMixin
 
 class CIDNet(nn.Module, PyTorchModelHubMixin):
     def __init__(self, 
                  channels=[36, 36, 72, 144],
                  heads=[1, 2, 4, 8],
-                 norm=False
+                 norm=False,
+                 hdp_dim=64
         ):
         super(CIDNet, self).__init__()
         
@@ -58,6 +60,11 @@ class CIDNet(nn.Module, PyTorchModelHubMixin):
         self.HV_LCA4 = HV_LCA(ch4, head4)
         self.HV_LCA5 = HV_LCA(ch3, head3)
         self.HV_LCA6 = HV_LCA(ch2, head2)
+
+        self.hdp_i = HighDimProjector(in_channels=1, hidden_channels=hdp_dim)
+        self.hdp_c = HighDimProjector(in_channels=2, hidden_channels=hdp_dim)
+        self.hdp_i_decode = FactorDecoder(in_channels=hdp_dim, out_channels=1)
+        self.hdp_c_decode = FactorDecoder(in_channels=hdp_dim, out_channels=2)
         
         self.I_LCA1 = I_LCA(ch2, head2)
         self.I_LCA2 = I_LCA(ch3, head3)
@@ -68,10 +75,18 @@ class CIDNet(nn.Module, PyTorchModelHubMixin):
         
         self.trans = RGB_HVI()
         
-    def forward(self, x):
+    def forward(self, x, return_aux=False):
         dtypes = x.dtype
-        hvi = self.trans.HVIT(x)
-        i = hvi[:,2,:,:].unsqueeze(1).to(dtypes)
+        hvi_base = self.trans.HVIT(x)
+        i_base = hvi_base[:,2,:,:].unsqueeze(1).to(dtypes)
+        c_base = hvi_base[:,:2,:,:].to(dtypes)
+
+        z_i = self.hdp_i(i_base)
+        z_c = self.hdp_c(c_base)
+
+        i = i_base + self.hdp_i_decode(z_i)
+        c = c_base + self.hdp_c_decode(z_c)
+        hvi = torch.cat([c, i], dim=1)
         # low
         i_enc0 = self.IE_block0(i)
         i_enc1 = self.IE_block1(i_enc0)
@@ -118,6 +133,17 @@ class CIDNet(nn.Module, PyTorchModelHubMixin):
         
         output_hvi = torch.cat([hv_0, i_dec0], dim=1) + hvi
         output_rgb = self.trans.PHVIT(output_hvi)
+
+        if return_aux:
+            aux = {
+                "z_i": z_i,
+                "z_c": z_c,
+                "i_base": i_base,
+                "c_base": c_base,
+                "i_enh": output_hvi[:, 2:3, :, :],
+                "c_enh": output_hvi[:, :2, :, :],
+            }
+            return output_rgb, aux
 
         return output_rgb
     
