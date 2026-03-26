@@ -75,8 +75,16 @@ def option():
     # auto grad, turn off to speed up training
     parser.add_argument('--grad_detect', type=_str2bool, default=False, help='if gradient explosion occurs, turn-on it')
     parser.add_argument('--grad_clip', type=_str2bool, default=True, help='if gradient fluctuates too much, turn-on it')
-    
-    
+
+    # high-dimensional disentanglement
+    parser.add_argument('--hdp_dim', type=int, default=64, help='high-dimensional latent width for intensity/chroma projection')
+    parser.add_argument('--hdp_ortho_weight', type=float, default=5e-3, help='weight for intensity/chroma orthogonality regularization')
+    parser.add_argument('--hdp_invariance_weight', type=float, default=5e-3, help='weight for chroma invariance regularization')
+    parser.add_argument('--hdp_recon_weight', type=float, default=1e-2, help='weight for projected-factor reconstruction consistency')
+    parser.add_argument('--hdp_cycle_weight', type=float, default=5e-2, help='weight for cycle consistency in RGB space')
+    parser.add_argument('--lambda_ssim', type=float, default=0.5, help='weight for SSIM supervision in RGB space')
+    parser.add_argument('--lambda_per', type=float, default=1e-2, help='weight for perceptual supervision in RGB space')
+
     # choose which dataset you want to train
     parser.add_argument('--dataset', type=str, default='lol_v1',
     choices=['lol_v1',

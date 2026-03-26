@@ -1,5 +1,6 @@
 import os
 import torch
+import torch.nn.functional as F
 import random
 from torchvision import transforms
 import torch.optim as optim
@@ -8,7 +9,6 @@ import numpy as np
 from torch.utils.data import DataLoader
 from net.CIDNet import CIDNet
 from data.options import option
-from measure import metrics
 from eval import eval
 from data.data import *
 from loss.losses import *
@@ -33,7 +33,8 @@ def train_init():
     os.environ['CUDA_VISIBLE_DEVICES'] = '0'
     cuda = opt.gpu_mode
     if cuda and not torch.cuda.is_available():
-        raise Exception("No GPU found, please run without --cuda")
+        print("Warning: GPU requested but unavailable, fallback to CPU mode.")
+        opt.gpu_mode = False
     
 def train(epoch):
     model.train()
@@ -46,29 +47,41 @@ def train(epoch):
     torch.autograd.set_detect_anomaly(opt.grad_detect)
     for batch in tqdm(training_data_loader):
         im1, im2, path1, path2 = batch[0], batch[1], batch[2], batch[3]
-        im1 = im1.cuda()
-        im2 = im2.cuda()
+        if opt.gpu_mode:
+            im1 = im1.cuda()
+            im2 = im2.cuda()
         
         # use random gamma function (enhancement curve) to improve generalization
         if opt.gamma:
             gamma = random.randint(opt.start_gamma,opt.end_gamma) / 100.0
-            output_rgb = model(im1 ** gamma)  
+            output_rgb, aux = model(im1 ** gamma, return_aux=True)  
         else:
-            output_rgb = model(im1)  
+            output_rgb, aux = model(im1, return_aux=True)  
             
         gt_rgb = im2
         output_hvi = model.HVIT(output_rgb)
         gt_hvi = model.HVIT(gt_rgb)
-        loss_hvi = L1_loss(output_hvi, gt_hvi) + D_loss(output_hvi, gt_hvi) + E_loss(output_hvi, gt_hvi) + opt.P_weight * P_loss(output_hvi, gt_hvi)[0]
-        loss_rgb = L1_loss(output_rgb, gt_rgb) + D_loss(output_rgb, gt_rgb) + E_loss(output_rgb, gt_rgb) + opt.P_weight * P_loss(output_rgb, gt_rgb)[0]
-        loss = loss_rgb + opt.HVI_weight * loss_hvi
+        loss_hvi = L1_loss(output_hvi, gt_hvi)
+        loss_l1 = L1_loss(output_rgb, gt_rgb)
+        loss_ssim = D_loss(output_rgb, gt_rgb)
+        loss_per = P_loss(output_rgb, gt_rgb)[0]
+        loss_edge = E_loss(output_rgb, gt_rgb)
+        loss_ci, loss_fo, loss_rc, loss_cc = disentangle_regularization(aux, gt_hvi, im1)
+        loss = loss_l1 \
+             + opt.lambda_ssim * loss_ssim \
+             + opt.lambda_per * loss_per \
+             + opt.E_weight * loss_edge \
+             + opt.HVI_weight * loss_hvi \
+             + opt.hdp_invariance_weight * loss_ci \
+             + opt.hdp_ortho_weight * loss_fo \
+             + opt.hdp_recon_weight * loss_rc \
+             + opt.hdp_cycle_weight * loss_cc
         iter += 1
-        
-        if opt.grad_clip:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.01, norm_type=2)
         
         optimizer.zero_grad()
         loss.backward()
+        if opt.grad_clip:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.01, norm_type=2)
         optimizer.step()
         
         loss_print = loss_print + loss.item()
@@ -76,8 +89,15 @@ def train(epoch):
         pic_cnt += 1
         pic_last_10 += 1
         if iter == train_len:
-            print("===> Epoch[{}]: Loss: {:.4f} || Learning rate: lr={}.".format(epoch,
-                loss_last_10/pic_last_10, optimizer.param_groups[0]['lr']))
+            print("===> Epoch[{}]: Loss: {:.4f} || LR: {} || CI: {:.4f} FO: {:.4f} RC: {:.4f} CC: {:.4f}".format(
+                epoch,
+                loss_last_10/pic_last_10,
+                optimizer.param_groups[0]['lr'],
+                loss_ci.item(),
+                loss_fo.item(),
+                loss_rc.item(),
+                loss_cc.item(),
+            ))
             loss_last_10 = 0
             pic_last_10 = 0
             output_img = transforms.ToPILImage()((output_rgb)[0].squeeze(0))
@@ -141,7 +161,9 @@ def load_datasets():
 
 def build_model():
     print('===> Building model ')
-    model = CIDNet().cuda()
+    model = CIDNet(hdp_dim=opt.hdp_dim)
+    if opt.gpu_mode:
+        model = model.cuda()
     if opt.start_epoch > 0:
         pth = f"./weights/train/epoch_{opt.start_epoch}.pth"
         model.load_state_dict(torch.load(pth, map_location=lambda storage, loc: storage))
@@ -165,16 +187,37 @@ def make_scheduler():
         raise Exception("should choose a scheduler")
     return optimizer,scheduler
 
+def disentangle_regularization(aux, gt_hvi, input_rgb):
+    # L_CI: chroma invariance in high-dimensional space
+    loss_ci = F.mse_loss(aux["z_c_hat"], aux["z_c_star"])
+
+    # L_FO: orthogonality factor constraint, cosine similarity should be close to 0
+    zi = aux["z_i_hat"].flatten(1)
+    zc = aux["z_c_hat"].flatten(1)
+    loss_fo = torch.abs(F.cosine_similarity(zi, zc, dim=1)).mean()
+
+    # L_RC: reconstruction consistency between inverse-projected HDP branch and direct low-dim branch
+    loss_rc = F.mse_loss(aux["i_from_hdp"], aux["i_direct"]) + F.mse_loss(aux["c_from_hdp"], aux["c_direct"])
+
+    # L_CC: cycle consistency in RGB observation space
+    loss_cc = F.l1_loss(aux["cycle_rgb"], input_rgb) + 0.5 * F.mse_loss(aux["cycle_rgb"], input_rgb)
+
+    return loss_ci, loss_fo, loss_rc, loss_cc
+
+
 def init_loss():
     L1_weight   = opt.L1_weight
-    D_weight    = opt.D_weight 
-    E_weight    = opt.E_weight 
     P_weight    = 1.0
     
-    L1_loss= L1Loss(loss_weight=L1_weight, reduction='mean').cuda()
-    D_loss = SSIM(weight=D_weight).cuda()
-    E_loss = EdgeLoss(loss_weight=E_weight).cuda()
-    P_loss = PerceptualLoss({'conv1_2': 1, 'conv2_2': 1,'conv3_4': 1,'conv4_4': 1}, perceptual_weight = P_weight ,criterion='mse').cuda()
+    L1_loss= L1Loss(loss_weight=L1_weight, reduction='mean')
+    D_loss = SSIM(weight=1.0)
+    E_loss = EdgeLoss(loss_weight=1.0)
+    P_loss = PerceptualLoss({'conv1_2': 1, 'conv2_2': 1,'conv3_4': 1,'conv4_4': 1}, perceptual_weight = P_weight ,criterion='mse')
+    if opt.gpu_mode:
+        L1_loss = L1_loss.cuda()
+        D_loss = D_loss.cuda()
+        E_loss = E_loss.cuda()
+        P_loss = P_loss.cuda()
     return L1_loss,P_loss,E_loss,D_loss
 
 if __name__ == '__main__':  
@@ -211,6 +254,13 @@ if __name__ == '__main__':
         f.write(f"D_weight: {opt.D_weight}\n")  
         f.write(f"E_weight: {opt.E_weight}\n")  
         f.write(f"P_weight: {opt.P_weight}\n")  
+        f.write(f"hdp_dim: {opt.hdp_dim}\n")  
+        f.write(f"hdp_ortho_weight: {opt.hdp_ortho_weight}\n")  
+        f.write(f"hdp_invariance_weight: {opt.hdp_invariance_weight}\n")  
+        f.write(f"hdp_recon_weight: {opt.hdp_recon_weight}\n")  
+        f.write(f"hdp_cycle_weight: {opt.hdp_cycle_weight}\n")  
+        f.write(f"lambda_ssim: {opt.lambda_ssim}\n")  
+        f.write(f"lambda_per: {opt.lambda_per}\n")  
         f.write("| Epochs | PSNR | SSIM | LPIPS |\n")  
         f.write("|----------------------|----------------------|----------------------|----------------------|\n")  
         
@@ -262,6 +312,7 @@ if __name__ == '__main__':
             eval(model, testing_data_loader, model_out_path, opt.val_folder+output_folder, 
                  norm_size=norm_size, LOL=is_lol_v1, v2=is_lolv2_real, alpha=0.8)
             
+            from measure import metrics
             avg_psnr, avg_ssim, avg_lpips = metrics(im_dir, label_dir, use_GT_mean=False)
             print("===> Avg.PSNR: {:.4f} dB ".format(avg_psnr))
             print("===> Avg.SSIM: {:.4f} ".format(avg_ssim))
