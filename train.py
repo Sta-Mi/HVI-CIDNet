@@ -31,7 +31,7 @@ def seed_torch():
 def train_init():
     seed_torch()
     cudnn.benchmark = True
-    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '2'
     cuda = opt.gpu_mode
     if cuda and not torch.cuda.is_available():
         raise Exception("No GPU found, please run without --cuda")
