@@ -31,7 +31,7 @@ def seed_torch():
 def train_init():
     seed_torch()
     cudnn.benchmark = True
-    os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
     cuda = opt.gpu_mode
     if cuda and not torch.cuda.is_available():
         raise Exception("No GPU found, please run without --cuda")
@@ -152,6 +152,9 @@ def load_datasets():
 def build_model():
     print('===> Building model ')
     model = CIDNet(hdp_dim=opt.hdp_dim).cuda()
+    model = torch.nn.DataParallel(model)
+    model.HVIT = model.module.HVIT
+    model.trans=model.module.trans
     if opt.start_epoch > 0:
         pth = f"./weights/train/epoch_{opt.start_epoch}.pth"
         model.load_state_dict(torch.load(pth, map_location=lambda storage, loc: storage))

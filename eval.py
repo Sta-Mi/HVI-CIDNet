@@ -116,9 +116,9 @@ if __name__ == '__main__':
         eval_data = DataLoader(dataset=get_eval_set("./datasets/LOLv2/Synthetic/Test/Low"), num_workers=num_workers, batch_size=1, shuffle=False)
         output_folder = './output/LOLv2_syn/'
         if ep.perc:
-            weight_path = './weights/LOLv2_syn/w_perc.pth'
+            weight_path = './weights/train/epoch_790.pth'
         else:
-            weight_path = './weights/LOLv2_syn/wo_perc.pth'
+            weight_path = './weights/train/epoch_790.pth'
             
     elif ep.SICE_grad:
         eval_data = DataLoader(dataset=get_SICE_eval_set("./datasets/SICE/SICE_Grad"), num_workers=num_workers, batch_size=1, shuffle=False)
