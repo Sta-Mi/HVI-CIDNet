@@ -8,21 +8,24 @@ from torch.utils.data import DataLoader
 from loss.losses import *
 from net.CIDNet import CIDNet
 
+def unwrap_model(net):
+    return net.module if isinstance(net, torch.nn.DataParallel) else net
 
 def eval(model, testing_data_loader, model_path, output_folder,norm_size=True,LOL=False,v2=False,unpaired=False,alpha=1.0,gamma=1.0):
     torch.set_grad_enabled(False)
+    model_core = unwrap_model(model)
     model.load_state_dict(torch.load(model_path, map_location=lambda storage, loc: storage))
     print('Pre-trained model is loaded.')
     model.eval()
     print('Evaluation:')
     if LOL:
-        model.trans.gated = True
+        model_core.trans.gated = True
     elif v2:
-        model.trans.gated2 = True
-        model.trans.alpha = alpha
+        model_core.trans.gated2 = True
+        model_core.trans.alpha = alpha
     elif unpaired:
-        model.trans.gated2 = True
-        model.trans.alpha = alpha
+        model_core.trans.gated2 = True
+        model_core.trans.alpha = alpha
     for batch in tqdm(testing_data_loader):
         with torch.no_grad():
             if norm_size:
@@ -45,9 +48,9 @@ def eval(model, testing_data_loader, model_path, output_folder,norm_size=True,LO
         torch.cuda.empty_cache()
     print('===> End evaluation')
     if LOL:
-        model.trans.gated = False
+        model_core.trans.gated = False
     elif v2:
-        model.trans.gated2 = False
+        model_core.trans.gated2 = False
     torch.set_grad_enabled(True)
     
 if __name__ == '__main__':

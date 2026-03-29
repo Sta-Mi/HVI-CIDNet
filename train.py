@@ -18,6 +18,8 @@ from tqdm import tqdm
 from datetime import datetime
 
 opt = option().parse_args()
+def unwrap_model(net):
+    return net.module if isinstance(net, torch.nn.DataParallel) else net
 
 def seed_torch():
     seed = random.randint(1, 1000000)
@@ -31,13 +33,14 @@ def seed_torch():
 def train_init():
     seed_torch()
     cudnn.benchmark = True
-    os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '1,0,2,3'
     cuda = opt.gpu_mode
     if cuda and not torch.cuda.is_available():
         raise Exception("No GPU found, please run without --cuda")
     
 def train(epoch):
     model.train()
+    model_core = unwrap_model(model)
     loss_print = 0
     pic_cnt = 0
     loss_last_10 = 0
@@ -49,17 +52,23 @@ def train(epoch):
         im1, im2, path1, path2 = batch[0], batch[1], batch[2], batch[3]
         im1 = im1.cuda()
         im2 = im2.cuda()
+
+        # DataParallel may fail when the last mini-batch is smaller than GPU count
+        # (one replica can receive kwargs-only input with no positional tensor).
+        # Fallback to the unwrapped module for such tiny batches.
+        use_single_gpu_fallback = isinstance(model, torch.nn.DataParallel) and im1.size(0) < len(model.device_ids)
+        runner = model_core if use_single_gpu_fallback else model
         
         # use random gamma function (enhancement curve) to improve generalization
         if opt.gamma:
             gamma = random.randint(opt.start_gamma,opt.end_gamma) / 100.0
-            output_rgb, aux = model(im1 ** gamma, return_aux=True)  
+            output_rgb, aux = runner(im1 ** gamma, return_aux=True)  
         else:
-            output_rgb, aux = model(im1, return_aux=True)  
+            output_rgb, aux = runner(im1, return_aux=True)  
             
         gt_rgb = im2
-        output_hvi = model.HVIT(output_rgb)
-        gt_hvi = model.HVIT(gt_rgb)
+        output_hvi = model_core.HVIT(output_rgb)
+        gt_hvi = model_core.HVIT(gt_rgb)
         loss_hvi = L1_loss(output_hvi, gt_hvi) + D_loss(output_hvi, gt_hvi) + E_loss(output_hvi, gt_hvi) + opt.P_weight * P_loss(output_hvi, gt_hvi)[0]
         loss_rgb = L1_loss(output_rgb, gt_rgb) + D_loss(output_rgb, gt_rgb) + E_loss(output_rgb, gt_rgb) + opt.P_weight * P_loss(output_rgb, gt_rgb)[0]
         decouple_loss, invariance_loss, recon_loss = disentangle_regularization(aux, gt_hvi)
@@ -145,16 +154,27 @@ def load_datasets():
     else:
         raise Exception("should choose a dataset")
     
-    training_data_loader = DataLoader(dataset=train_set, num_workers=opt.threads, batch_size=opt.batchSize, shuffle=opt.shuffle)
+    training_data_loader = DataLoader(
+        dataset=train_set,
+        num_workers=opt.threads,
+        batch_size=opt.batchSize,
+        shuffle=opt.shuffle,
+        drop_last=True,
+    )
     testing_data_loader = DataLoader(dataset=test_set, num_workers=opt.threads, batch_size=1, shuffle=False)
     return training_data_loader, testing_data_loader
 
 def build_model():
     print('===> Building model ')
     model = CIDNet(hdp_dim=opt.hdp_dim).cuda()
-    model = torch.nn.DataParallel(model)
-    model.HVIT = model.module.HVIT
-    model.trans=model.module.trans
+    gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    use_data_parallel = gpu_count > 1 and os.environ.get("CIDNET_USE_DP", "0") == "1"
+    if use_data_parallel:
+        print(f"===> Enabling DataParallel on {gpu_count} GPUs (CIDNET_USE_DP=1)")
+        model = torch.nn.DataParallel(model)
+    elif gpu_count > 1:
+        print("===> Multiple GPUs detected, using single-GPU mode by default for stability.")
+        print("===> Set CIDNET_USE_DP=1 to re-enable torch.nn.DataParallel.")
     if opt.start_epoch > 0:
         pth = f"./weights/train/epoch_{opt.start_epoch}.pth"
         model.load_state_dict(torch.load(pth, map_location=lambda storage, loc: storage))
