@@ -1,5 +1,5 @@
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 import argparse
 from tqdm import tqdm
 from data.data import *
@@ -11,10 +11,29 @@ from net.CIDNet import CIDNet
 def unwrap_model(net):
     return net.module if isinstance(net, torch.nn.DataParallel) else net
 
+
+def _normalize_state_dict_keys(state_dict, target_has_module_prefix):
+    has_module_prefix = all(k.startswith("module.") for k in state_dict.keys())
+    if has_module_prefix == target_has_module_prefix:
+        return state_dict
+
+    if target_has_module_prefix:
+        return {f"module.{k}": v for k, v in state_dict.items()}
+    return {k[len("module."):]: v if k.startswith("module.") else v for k, v in state_dict.items()}
+
+
+def load_checkpoint_flexible(model, model_path):
+    checkpoint = torch.load(model_path, map_location=lambda storage, loc: storage)
+    state_dict = checkpoint["state_dict"] if isinstance(checkpoint, dict) and "state_dict" in checkpoint else checkpoint
+    model_state_keys = model.state_dict().keys()
+    target_has_module_prefix = all(k.startswith("module.") for k in model_state_keys)
+    state_dict = _normalize_state_dict_keys(state_dict, target_has_module_prefix)
+    model.load_state_dict(state_dict, strict=True)
+
 def eval(model, testing_data_loader, model_path, output_folder,norm_size=True,LOL=False,v2=False,unpaired=False,alpha=1.0,gamma=1.0):
     torch.set_grad_enabled(False)
     model_core = unwrap_model(model)
-    model.load_state_dict(torch.load(model_path, map_location=lambda storage, loc: storage))
+    load_checkpoint_flexible(model, model_path)
     print('Pre-trained model is loaded.')
     model.eval()
     print('Evaluation:')
@@ -119,9 +138,9 @@ if __name__ == '__main__':
         eval_data = DataLoader(dataset=get_eval_set("./datasets/LOLv2/Synthetic/Test/Low"), num_workers=num_workers, batch_size=1, shuffle=False)
         output_folder = './output/LOLv2_syn/'
         if ep.perc:
-            weight_path = './weights/train/epoch_790.pth'
+            weight_path = './weights/LOLv2_syn/w_perc.pth'
         else:
-            weight_path = './weights/train/epoch_790.pth'
+            weight_path = './weights/LOLv2_syn/wo_perc.pth'
             
     elif ep.SICE_grad:
         eval_data = DataLoader(dataset=get_SICE_eval_set("./datasets/SICE/SICE_Grad"), num_workers=num_workers, batch_size=1, shuffle=False)

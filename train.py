@@ -18,11 +18,14 @@ from tqdm import tqdm
 from datetime import datetime
 
 opt = option().parse_args()
+
+def get_train_weights_dir():
+    return os.path.join("./weights/train", opt.dataset)
+
 def unwrap_model(net):
     return net.module if isinstance(net, torch.nn.DataParallel) else net
 
-def seed_torch():
-    seed = random.randint(1, 1000000)
+def seed_torch(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -31,9 +34,11 @@ def seed_torch():
     os.environ['PYTHONHASHSEED'] = str(seed)
     
 def train_init():
-    seed_torch()
-    cudnn.benchmark = True
-    os.environ['CUDA_VISIBLE_DEVICES'] = '1,0,2,3'
+    seed_torch(opt.seed)
+    cudnn.benchmark = False
+    cudnn.deterministic = True
+    print(f"===> Using fixed seed: {opt.seed}")
+    os.environ['CUDA_VISIBLE_DEVICES'] = '1,0,3'
     cuda = opt.gpu_mode
     if cuda and not torch.cuda.is_available():
         raise Exception("No GPU found, please run without --cuda")
@@ -111,9 +116,9 @@ def train(epoch):
 def checkpoint(epoch):
     if not os.path.exists("./weights"):          
         os.mkdir("./weights") 
-    if not os.path.exists("./weights/train"):          
-        os.mkdir("./weights/train")  
-    model_out_path = "./weights/train/epoch_{}.pth".format(epoch)
+    weights_dir = get_train_weights_dir()
+    os.makedirs(weights_dir, exist_ok=True)
+    model_out_path = os.path.join(weights_dir, "epoch_{}.pth".format(epoch))
     torch.save(model.state_dict(), model_out_path)
     print("Checkpoint saved to {}".format(model_out_path))
     return model_out_path
@@ -176,7 +181,7 @@ def build_model():
         print("===> Multiple GPUs detected, using single-GPU mode by default for stability.")
         print("===> Set CIDNET_USE_DP=1 to re-enable torch.nn.DataParallel.")
     if opt.start_epoch > 0:
-        pth = f"./weights/train/epoch_{opt.start_epoch}.pth"
+        pth = os.path.join(get_train_weights_dir(), f"epoch_{opt.start_epoch}.pth")
         model.load_state_dict(torch.load(pth, map_location=lambda storage, loc: storage))
     return model
 
