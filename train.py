@@ -38,7 +38,7 @@ def train_init():
     cudnn.benchmark = False
     cudnn.deterministic = True
     print(f"===> Using fixed seed: {opt.seed}")
-    os.environ['CUDA_VISIBLE_DEVICES'] = '1,0,3'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '1,2,3'
     cuda = opt.gpu_mode
     if cuda and not torch.cuda.is_available():
         raise Exception("No GPU found, please run without --cuda")
