@@ -19,8 +19,15 @@ from datetime import datetime
 
 opt = option().parse_args()
 
+def get_run_tag():
+    run_name = getattr(opt, "run_name", "default")
+    return run_name.strip() if isinstance(run_name, str) and run_name.strip() else "default"
+
 def get_train_weights_dir():
-    return os.path.join("./weights/train", opt.dataset)
+    return os.path.join("./weights/train", opt.dataset, get_run_tag())
+
+def get_train_preview_dir():
+    return os.path.join(opt.val_folder, opt.dataset, get_run_tag(), "training")
 
 def unwrap_model(net):
     return net.module if isinstance(net, torch.nn.DataParallel) else net
@@ -38,10 +45,13 @@ def train_init():
     cudnn.benchmark = False
     cudnn.deterministic = True
     print(f"===> Using fixed seed: {opt.seed}")
-    os.environ['CUDA_VISIBLE_DEVICES'] = '1,2,3'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
     cuda = opt.gpu_mode
     if cuda and not torch.cuda.is_available():
         raise Exception("No GPU found, please run without --cuda")
+    print(f"===> Run tag: {get_run_tag()}")
+    print(f"===> Train weights dir: {get_train_weights_dir()}")
+    print(f"===> Train preview dir: {get_train_preview_dir()}")
     
 def train(epoch):
     model.train()
@@ -106,10 +116,10 @@ def train(epoch):
             pic_last_10 = 0
             output_img = transforms.ToPILImage()((output_rgb)[0].squeeze(0))
             gt_img = transforms.ToPILImage()((gt_rgb)[0].squeeze(0))
-            if not os.path.exists(opt.val_folder+'training'):          
-                os.mkdir(opt.val_folder+'training') 
-            output_img.save(opt.val_folder+'training/test.png')
-            gt_img.save(opt.val_folder+'training/gt.png')
+            preview_dir = get_train_preview_dir()
+            os.makedirs(preview_dir, exist_ok=True)
+            output_img.save(os.path.join(preview_dir, 'test.png'))
+            gt_img.save(os.path.join(preview_dir, 'gt.png'))
     return loss_print, pic_cnt
                 
 

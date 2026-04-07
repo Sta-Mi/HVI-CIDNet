@@ -11,7 +11,7 @@ def _str2bool(v):
 def option():
     # Training settings
     parser = argparse.ArgumentParser(description='CIDNet')
-    parser.add_argument('--batchSize', type=int, default=1, help='training batch size')
+    parser.add_argument('--batchSize', type=int, default=8, help='training batch size')
     parser.add_argument('--cropSize', type=int, default=384, help='image crop size (patch size)')
     parser.add_argument('--nEpochs', type=int, default=1500, help='number of epochs to train for end')
     parser.add_argument('--start_epoch', type=int, default=0, help='number of epochs to start, >0 is retrained a pre-trained pth')
@@ -60,13 +60,14 @@ def option():
     parser.add_argument('--data_valgt_fivek'        , type=str, default='./datasets/FiveK/test/target/')
 
     parser.add_argument('--val_folder', default='./results/', help='Location to save validation datasets')
-
+    parser.add_argument('--run_name', type=str, default='default', help='Run identifier to isolate checkpoints/results across concurrent trainings')
+    
     # loss weights
     parser.add_argument('--HVI_weight', type=float, default=1.0)
     parser.add_argument('--L1_weight', type=float, default=1.0)
     parser.add_argument('--D_weight',  type=float, default=0.5)
     parser.add_argument('--E_weight',  type=float, default=50)
-    parser.add_argument('--P_weight',  type=float, default=1e-2)
+    parser.add_argument('--P_weight',  type=float, default=0)
     
     # use random gamma function (enhancement curve) to improve generalization
     parser.add_argument('--gamma', type=_str2bool, default=False)
